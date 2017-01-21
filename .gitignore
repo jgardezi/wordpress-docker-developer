@@ -1,0 +1,11 @@
+# Ignore .env file
+.env
+
+# Ignore mysql files
+mysql
+
+# Ignore redis directory
+redis
+
+# Ignore wordpress content directory
+wp-content

@@ -1,11 +1,61 @@
-FROM nginx:1.11-alpine
-MAINTAINER Javed Gardezi <jgardezi@gmail.com>
+FROM php:7.0.6-fpm-alpine
+MAINTAINER Javed Gardezi
 
-RUN mkdir -p /var/www/html
-WORKDIR /var/www/html
+RUN apk add --no-cache nginx mysql-client supervisor curl \
+    bash redis imagemagick-dev
 
-COPY nginx.conf /etc/nginx/conf.d/default.conf
+RUN apk add --no-cache libtool build-base autoconf \
+    && docker-php-ext-install \
+      -j$(grep -c ^processor /proc/cpuinfo 2>/dev/null || 1) \
+      iconv gd mbstring fileinfo curl xmlreader xmlwriter spl ftp mysqli opcache \
+    && pecl install imagick \
+    && docker-php-ext-enable imagick \
+    && apk del libtool build-base autoconf
 
-COPY . ./
+# Installing WordPress
+ENV WP_ROOT /usr/src/wordpress
+ENV WP_VERSION 4.7.1
+ENV WP_SHA1 8e56ba56c10a3f245c616b13e46bd996f63793d6
+ENV WP_DOWNLOAD_URL https://wordpress.org/wordpress-$WP_VERSION.tar.gz
 
-#COPY index.html /usr/share/nginx/html
+RUN curl -o wordpress.tar.gz -SL $WP_DOWNLOAD_URL \
+    && echo "$WP_SHA1 *wordpress.tar.gz" | sha1sum -c - \
+    && tar -xzf wordpress.tar.gz -C $(dirname $WP_ROOT) \
+    && rm wordpress.tar.gz
+
+RUN adduser -D deployer -s /bin/bash -G www-data
+
+VOLUME /var/www/wp-content
+WORKDIR /var/www/wp-content
+
+# Copy wp-config.php to wp root and ownership/permissions on it.
+COPY wp-config.php $WP_ROOT
+RUN chown -R deployer:www-data $WP_ROOT \
+    && chmod 640 $WP_ROOT/wp-config.php
+
+# Configuring WP-CRON
+COPY cron.conf /etc/crontabs/deployer
+RUN chmod 600 /etc/crontabs/deployer
+
+# Installing wp-cli
+RUN curl -O https://raw.githubusercontent.com/wp-cli/builds/gh-pages/phar/wp-cli.phar \
+    && chmod +x wp-cli.phar \
+    && mv wp-cli.phar /usr/local/bin/wp
+
+# Nginx configuration
+COPY nginx.conf /etc/nginx/nginx.conf
+COPY vhost.conf /etc/nginx/conf.d/
+RUN ln -sf /dev/stdout /var/log/nginx/access.log \
+    && ln -sf /dev/stderr /var/log/nginx/error.log \
+    && chown -R www-data:www-data /var/lib/nginx
+
+# (Optional) Setting an entrypoint
+COPY docker-entrypoint.sh /usr/local/bin/
+ENTRYPOINT [ "docker-entrypoint.sh" ]
+
+# Bringing it together with Supervisor
+RUN mkdir -p /var/log/supervisor
+COPY supervisord.conf /etc/supervisord.conf
+COPY stop-supervisor.sh /usr/local/bin/
+
+CMD [ "/usr/bin/supervisord", "-c", "/etc/supervisord.conf" ]
